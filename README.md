@@ -6,6 +6,8 @@ everything that imports it stacked above. Expand upward until you reach a
 page. It follows explicit imports and auto-registered components alike, so
 it works across a Vue/TypeScript project in `.vue`, `.ts`, and `.tsx` buffers.
 
+https://github.com/h-jennings/import-tree.nvim/raw/main/assets/import-tree-demo.mp4
+
 Built on vtsls's `typescript.findAllFileReferences` rather than call
 hierarchy: a component used in a template is an import plus a property
 lookup, never a "call".
