@@ -6,7 +6,7 @@ file on the bottom line and everything that imports it stacked above.
 Expand upward until you reach a page. It follows explicit imports and auto-registered components alike, so
 it works across a Vue/TypeScript project in `.vue`, `.ts`, and `.tsx` buffers.
 
-https://github.com/user-attachments/assets/eed44d63-ba70-468c-be9e-271b8e873cc2
+https://github.com/user-attachments/assets/73db947c-5797-4c96-afba-8af8ee5e152d
 
 Built on vtsls's `typescript.findAllFileReferences` rather than call
 hierarchy: a component used in a template is an import plus a property
