@@ -35,6 +35,20 @@ local function fetch(node, cb)
 	if node.children then
 		return cb(node.children)
 	end
+	-- Already fetching; that fetch renders when it lands.
+	if node.loading then
+		return
+	end
+	-- vtsls may have been restarted since the tree opened.
+	if state.client:is_stopped() then
+		local client = int.live_client(state.bufnr)
+		if not client then
+			node.failed = true
+			node.children = {}
+			return cb(node.children)
+		end
+		state.client = client
+	end
 	node.loading = true
 	M._render()
 	int.importers_of(state.client, state.bufnr, node.path, state.opts, node.depth + 1, function(importers, failed)
@@ -58,11 +72,19 @@ end
 local function rel_dir(path)
 	local dir = vim.fn.fnamemodify(path, ":h")
 	local root = state.root_dir
-	if root and dir:sub(1, #root + 1) == root .. "/" then
+	if root and dir == root then
+		return ""
+	elseif root and dir:sub(1, #root + 1) == root .. "/" then
 		dir = dir:sub(#root + 2)
 	end
-	-- Everything up to the app's `src/` is the same for every row.
-	return dir:gsub("^.-/src/", "")
+	-- Everything up to the app's `src/` is the same for every row. The
+	-- slashes added around `dir` let a leading `src` or a directory that
+	-- is `src` itself match too.
+	local under_src = ("/" .. dir .. "/"):match("^.-/src/(.*)$")
+	if under_src then
+		return (under_src:gsub("/$", ""))
+	end
+	return dir
 end
 
 local function icon(node)
@@ -199,20 +221,68 @@ local function expand(node, cb)
 	end)
 end
 
+-- Window-local options `ensure_win` sets on the tree window.
+local TREE_WIN_OPTS = {
+	"number",
+	"relativenumber",
+	"signcolumn",
+	"foldcolumn",
+	"wrap",
+	"cursorline",
+	"winfixwidth",
+	"list",
+	"statuscolumn",
+}
+
+local function in_this_tab(win)
+	return win
+		and vim.api.nvim_win_is_valid(win)
+		and vim.api.nvim_win_get_tabpage(win) == vim.api.nvim_get_current_tabpage()
+end
+
+local function is_float(win)
+	return vim.api.nvim_win_get_config(win).relative ~= ""
+end
+
 -- The window files open in: whatever was current when the tree opened,
--- or the first non-tree window if that one is gone.
+-- or the first regular non-tree window if that one is gone, or a new
+-- split if there is none.
 local function target_win()
 	local s = state
-	if s.prev_win and vim.api.nvim_win_is_valid(s.prev_win) and s.prev_win ~= s.win then
+	if in_this_tab(s.prev_win) and s.prev_win ~= s.win and not is_float(s.prev_win) then
 		return s.prev_win
 	end
 	for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-		if w ~= s.win then
+		if w ~= s.win and not is_float(w) then
+			s.prev_win = w
 			return w
 		end
 	end
-	vim.cmd("topleft vsplit")
-	return vim.api.nvim_get_current_win()
+	-- The split copies the tree window's options, so put back the
+	-- global values, and give the tree its width back.
+	local win
+	vim.api.nvim_win_call(s.win, function()
+		vim.cmd("topleft vsplit")
+		win = vim.api.nvim_get_current_win()
+	end)
+	for _, opt in ipairs(TREE_WIN_OPTS) do
+		vim.wo[win][0][opt] = vim.api.nvim_get_option_value(opt, { scope = "global" })
+	end
+	vim.api.nvim_win_set_width(s.win, WIDTH)
+	s.prev_win = win
+	return win
+end
+
+-- LSP columns count in the server's encoding (UTF-16 for vtsls); the
+-- cursor wants bytes.
+local function byte_col(buf, lnum, col)
+	local line = vim.api.nvim_buf_get_lines(buf, lnum - 1, lnum, false)[1]
+	if not line then
+		return col
+	end
+	local encoding = state.client and state.client.offset_encoding or "utf-16"
+	local ok, byte = pcall(vim.str_byteindex, line, encoding, col, false)
+	return ok and byte or col
 end
 
 local function open_node(node, stay)
@@ -220,7 +290,8 @@ local function open_node(node, stay)
 	vim.api.nvim_win_call(win, function()
 		vim.cmd.edit(vim.fn.fnameescape(node.path))
 		if node.pos then
-			pcall(vim.api.nvim_win_set_cursor, 0, { node.pos[1], node.pos[2] })
+			local lnum = node.pos[1]
+			pcall(vim.api.nvim_win_set_cursor, 0, { lnum, byte_col(0, lnum, node.pos[2]) })
 			vim.cmd("normal! zz")
 		end
 	end)
@@ -326,15 +397,20 @@ end
 
 local function ensure_win()
 	local s = state
-	if s.win and vim.api.nvim_win_is_valid(s.win) then
+	if in_this_tab(s.win) then
 		vim.api.nvim_set_current_win(s.win)
 		return
 	end
+	-- Open in another tab: move it here rather than jumping there.
+	M.close()
 	s.prev_win = vim.api.nvim_get_current_win()
 	vim.cmd(("vertical botright %dsplit"):format(WIDTH))
 	s.win = vim.api.nvim_get_current_win()
 	vim.api.nvim_win_set_buf(s.win, s.buf)
-	local wo = vim.wo[s.win]
+	-- `[0]` sets them like `:setlocal`; plain `vim.wo[win]` would also
+	-- overwrite the user's global values.
+	-- Keep in sync with TREE_WIN_OPTS.
+	local wo = vim.wo[s.win][0]
 	wo.number = false
 	wo.relativenumber = false
 	wo.signcolumn = "no"
@@ -355,8 +431,9 @@ function M.close()
 	end
 end
 
+--- Whether the tree is showing in the current tab.
 function M.is_open()
-	return state and state.win and vim.api.nvim_win_is_valid(state.win) or false
+	return state and in_this_tab(state.win) or false
 end
 
 --- Opens the tree rooted at the current buffer's file. Called from the

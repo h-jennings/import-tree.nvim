@@ -74,7 +74,9 @@ from a local checkout:
 ```
 
 `opts.defaults` overrides the defaults below for every project; a
-project's entries override those.
+project's entries override those. The first matching pattern wins. In a
+map, longer patterns are tried first; to set the order yourself, pass a
+list of `{ pattern, opts }` pairs instead.
 
 ## Config
 
@@ -91,7 +93,8 @@ Each may be a list of Lua patterns against the absolute path, or a
 
 ## Things to know
 
-- Each layer is one tsserver lookup. The first time a session touches an
+- Each layer is one tsserver lookup, and a lookup vtsls doesn't answer
+  within 15 seconds shows `lookup failed`. The first time a session touches an
   auto-registered component it waits a second or two for `components.d.ts`
   to load; after that each layer is quick and results are cached until you
   close the tree.
