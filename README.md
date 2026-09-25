@@ -4,7 +4,7 @@ Shows where the file you're in ends up. Press `<leader>cp` in a component
 and a tree opens on the right with that file on the bottom line and
 everything that imports it stacked above. Expand upward until you reach a
 page. It follows explicit imports and auto-registered components alike, so
-it works across all of hyper-space in `.vue`, `.ts`, and `.tsx` buffers.
+it works across a Vue/TypeScript project in `.vue`, `.ts`, and `.tsx` buffers.
 
 Built on vtsls's `typescript.findAllFileReferences` rather than call
 hierarchy: a component used in a template is an import plus a property
@@ -65,7 +65,7 @@ from a local checkout:
 		-- Per-project settings, keyed by a Lua pattern matched against the
 		-- repo root (so worktrees are covered).
 		projects = {
-			["hyper%-space"] = { ceiling = { "/src/pages/" } },
+			["my%-app"] = { ceiling = { "/src/pages/" } },
 		},
 	},
 }
@@ -95,8 +95,8 @@ Each may be a list of Lua patterns against the absolute path, or a
   close the tree.
 - vtsls insists on opening each file it looks up, so after a session `:ls!`
   lists them as hidden, unlisted buffers. Harmless.
-- Composables show up as layers (`Page → useOrderUnitsTable.ts →
-  ClippedCellContent`) when they import a component for a column renderer.
+- Composables show up as layers (`Page → useOrdersTable.ts → TableCell`)
+  when they import a component, e.g. for a column renderer.
 
 ## How it works
 
