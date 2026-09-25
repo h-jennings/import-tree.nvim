@@ -375,8 +375,13 @@ local keys = {
 
 local function ensure_buf()
 	local s = state
-	if s.buf and vim.api.nvim_buf_is_valid(s.buf) then
+	-- A `:bdelete`d buffer is still valid but unloaded, and Neovim reset
+	-- its options and dropped its keymaps, so it has to be rebuilt.
+	if s.buf and vim.api.nvim_buf_is_valid(s.buf) and vim.api.nvim_buf_is_loaded(s.buf) then
 		return
+	end
+	if s.buf and vim.api.nvim_buf_is_valid(s.buf) then
+		vim.api.nvim_buf_delete(s.buf, { force = true })
 	end
 	local buf = vim.api.nvim_create_buf(false, true)
 	vim.bo[buf].buftype = "nofile"
@@ -424,7 +429,11 @@ end
 
 function M.close()
 	if state and state.win and vim.api.nvim_win_is_valid(state.win) then
-		vim.api.nvim_win_close(state.win, true)
+		-- Fails when the tree is the last window; leave it showing an
+		-- empty buffer instead.
+		if not pcall(vim.api.nvim_win_close, state.win, true) then
+			vim.api.nvim_win_set_buf(state.win, vim.api.nvim_create_buf(true, false))
+		end
 	end
 	if state then
 		state.win = nil
