@@ -1,9 +1,9 @@
 # import-tree
 
 Shows where the file you're in ends up. Press `<leader>cp` in a component
-and a tree opens on the right with that file on the bottom line and
-everything that imports it stacked above. Expand upward until you reach a
-page. It follows explicit imports and auto-registered components alike, so
+and a panel opens along the bottom, drawn like trouble.nvim's, with that
+file on the bottom line and everything that imports it stacked above.
+Expand upward until you reach a page. It follows explicit imports and auto-registered components alike, so
 it works across a Vue/TypeScript project in `.vue`, `.ts`, and `.tsx` buffers.
 
 https://github.com/user-attachments/assets/eed44d63-ba70-468c-be9e-271b8e873cc2
@@ -19,9 +19,10 @@ lookup, never a "call".
 2. `j` / `k` move. Up on screen is up the graph.
 3. `l` (or `<cr>`) expands a row: its importers appear above it, one level
    further in.
-4. Pages are `●` and sort to the top of each group. The dim text on the
-   right is the directory under `src/`, so `pages/receiving` and
-   `pages/floor/receiving` tell apart.
+4. Pages are highlighted and sort to the top of each group. The dim text
+   after a name is the directory under `src/`, so `pages/receiving` and
+   `pages/floor/receiving` tell apart. The badge after an expanded file
+   is how many files import it.
 5. `o` opens the row's file in your editing window with the cursor on the
    line that uses the node below it, so from a page row you land on the
    `<my-component />` tag. `p` does the same but keeps focus in the tree,
@@ -44,13 +45,24 @@ lookup, never a "call".
 
 ## Markers
 
-| Marker          | Meaning                                                      |
-| --------------- | ------------------------------------------------------------ |
-| `▸` / `▴`       | collapsed / expanded                                         |
-| `●` / `◉`       | page, collapsed / expanded (expanding one shows the router)  |
-| `·` `root`      | nothing imports this file                                    |
-| `…`             | lookup in progress                                           |
+Rows follow trouble's conventions, mirrored for a tree that grows upward.
+
+| Marker          | Meaning                                                           |
+| --------------- | ----------------------------------------------------------------- |
+| ``             | collapsed; `l` lists its importers above it                       |
+| ``             | expanded (the root only; deeper rows show their guide instead)    |
+| `┌╴` `├╴` `│`   | guides from a file up to its importers; `┌╴` is the topmost one   |
+| ` 3 `           | how many files import this one, shown once they've been fetched   |
+| `page`          | matched `ceiling` (expanding one shows the router)                |
+| `root`          | nothing imports this file                                         |
+| `…`             | lookup in progress                                                |
 | `lookup failed` | vtsls errored; try `r` on it, or `<leader>lt` to restart tsserver |
+
+Highlights are `ImportTree*` groups linked the same way trouble links its
+`Trouble*` groups (`ImportTreeNormal` → `NormalFloat`, `ImportTreeCount` →
+`TabLineSel`, `ImportTreeIndent` → `LineNr`, …), so a colorscheme that
+styles one panel styles both. File icons come from mini.icons or
+nvim-web-devicons when either is installed.
 
 ## Install
 
@@ -87,9 +99,27 @@ Defaults, in `lua/import-tree/init.lua`:
 | `ceiling`           | `{}`                                   | Files marked as pages (`●`, sorted first)                |
 | `ignore`            | `spec`, `test`, `stories` files        | Never listed as importers                                |
 | `global_components` | `components.d.ts`                      | Generated declarations to resolve through (see below)    |
+| `win`               | `{ position = "bottom", size = 10 }`   | Where the panel goes; `size` is lines for top/bottom, columns for left/right, or a fraction of the editor when 1 or less |
+| `icons`             | trouble's `│ ├╴ └╴` set, flipped       | `indent.{top,middle,first,fold_open,fold_closed,ws}` and `loading` |
 
-Each may be a list of Lua patterns against the absolute path, or a
-`function(path, depth) -> boolean`.
+The first three may be a list of Lua patterns against the absolute path,
+or a `function(path, depth) -> boolean`.
+
+### no-neck-pain
+
+A bottom panel leaves no-neck-pain's centering alone, unlike the old
+right-hand split. To have no-neck-pain treat it as a panel the way it
+treats trouble (skipping it when enabling, never picking it as the main
+window), register the filetype as an integration; `none` is the position
+no-neck-pain uses for panels that don't take a side:
+
+```lua
+require("no-neck-pain").setup({
+	integrations = {
+		["import-tree"] = { position = "none" },
+	},
+})
+```
 
 ## Things to know
 
@@ -106,7 +136,11 @@ Each may be a list of Lua patterns against the absolute path, or a
 ## How it works
 
 - `init.lua`: one-level lookup (`importers_of`), config, and the vtsls
-  plumbing. `tree.lua`: the buffer, rendering, and keys.
+  plumbing. `tree.lua`: the window, rendering, and keys. The window is
+  opened and styled the way trouble opens its list (`botright 10split`,
+  the same window options and highlight links), and rows follow
+  trouble's indent-guide rules with the connectors flipped so guides run
+  from a file up to its importers.
 - An auto-registered component's only "importer" is its entry in the
   generated `components.d.ts`. Template usages resolve through that entry,
   so when a lookup lands there, the tree runs `textDocument/references` on

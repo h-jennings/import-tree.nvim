@@ -15,6 +15,28 @@ local defaults = {
 	-- Generated global-component declarations (unplugin-vue-components).
 	-- Seen as an importer, they're replaced by references to the entry.
 	global_components = { "components%.d%.ts$" },
+	-- The tree window, laid out like trouble.nvim's: a full-width panel
+	-- at the bottom. `size` is lines for top/bottom, columns for
+	-- left/right; a value of 1 or less is a fraction of the editor.
+	win = {
+		---@type "bottom"|"top"|"left"|"right"
+		position = "bottom",
+		size = 10,
+	},
+	-- stylua: ignore
+	icons = {
+		-- Guides run from a file up to its importers, so the topmost
+		-- importer is where a line ends.
+		indent = {
+			top         = "│ ", -- line continuing up past this row
+			middle      = "├╴",
+			first       = "┌╴",
+			fold_open   = " ", -- importers shown above
+			fold_closed = " ",
+			ws          = "  ",
+		},
+		loading = "… ",
+	},
 }
 
 local config = { defaults = defaults, projects = {} }
@@ -294,7 +316,7 @@ local function start_from(bufnr, overrides)
 	return client, bufnr, resolve_opts(client.root_dir, overrides), vim.api.nvim_buf_get_name(bufnr)
 end
 
---- Expandable tree of importers in a right-hand split, drawn upward from
+--- Expandable tree of importers in a bottom panel, drawn upward from
 --- the current file. See `import-tree.tree`.
 function M.tree(overrides)
 	require("import-tree.tree").toggle(overrides)
@@ -302,6 +324,7 @@ end
 
 -- Shared with `import-tree.tree`.
 M._internals = {
+	defaults = defaults,
 	importers_of = importers_of,
 	live_client = live_client,
 	matches = matches,

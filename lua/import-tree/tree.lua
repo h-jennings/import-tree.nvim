@@ -1,9 +1,13 @@
--- Expandable tree of importers in a right-hand split, drawn upward: the
+-- Expandable tree of importers in a bottom panel, drawn upward: the
 -- file the tree was opened from sits at the bottom and each layer of
 -- importers stacks above the file it imports, so moving up the buffer
 -- is moving up the graph and pages end up at the top. Children are
 -- fetched the first time a node is expanded, so the cost is one lookup
 -- per layer actually looked at.
+--
+-- The window and the rows are drawn the way trouble.nvim draws its
+-- list: same split, window options, highlight links, indent guides and
+-- count badge, so the two panels look like one family.
 
 local M = {}
 
@@ -11,10 +15,77 @@ local core = require("import-tree")
 local int = core._internals
 
 local ns = vim.api.nvim_create_namespace("import-tree")
-local WIDTH = 40
 
 -- One tree at a time. Reopening from another file re-roots it.
 local state
+
+-- Highlight groups, linked like trouble's (`Trouble*`) so a colorscheme
+-- that styles one styles both.
+-- stylua: ignore
+local HIGHLIGHTS = {
+	Normal           = "NormalFloat",
+	NormalNC         = "NormalFloat",
+	Filename         = "Directory",
+	Root             = "Title",
+	Page             = "DiagnosticOk",
+	Directory        = "Comment",
+	Tail             = "Comment",
+	Failed           = "DiagnosticError",
+	Count            = "TabLineSel",
+	Loading          = "Comment",
+	Indent           = "LineNr",
+	IndentFoldClosed = "CursorLineNr",
+	IndentFoldOpen   = "ImportTreeIndent",
+	IndentTop        = "ImportTreeIndent",
+	IndentMiddle     = "ImportTreeIndent",
+	IndentFirst      = "ImportTreeIndent",
+	IndentWs         = "ImportTreeIndent",
+}
+
+local function link_highlights()
+	for name, target in pairs(HIGHLIGHTS) do
+		vim.api.nvim_set_hl(0, "ImportTree" .. name, { link = target, default = true })
+	end
+end
+link_highlights()
+vim.api.nvim_create_autocmd("ColorScheme", {
+	group = vim.api.nvim_create_augroup("import-tree.colorscheme", { clear = true }),
+	callback = link_highlights,
+})
+
+-- File icons the way trouble picks them: mini.icons, else devicons,
+-- else none. Providers that error are dropped for good.
+local icon_providers = {
+	function(name)
+		return require("mini.icons").get("file", name)
+	end,
+	function(name, ext)
+		return require("nvim-web-devicons").get_icon(name, ext, { default = true })
+	end,
+}
+local function file_icon(path)
+	local name = vim.fn.fnamemodify(path, ":t")
+	local ext = vim.fn.fnamemodify(path, ":e")
+	while #icon_providers > 0 do
+		local ok, icon, hl = pcall(icon_providers[1], name, ext)
+		if ok then
+			return icon, hl
+		end
+		table.remove(icon_providers, 1)
+	end
+end
+
+local WIN_DEFAULTS = { position = "bottom", size = nil }
+
+local function win_opts()
+	local win = vim.tbl_extend("force", WIN_DEFAULTS, state.opts.win or {})
+	local horizontal = win.position == "bottom" or win.position == "top"
+	local size = win.size or (horizontal and 10 or 40)
+	if size <= 1 then
+		size = math.floor((horizontal and vim.o.lines or vim.o.columns) * size)
+	end
+	return win.position, size, horizontal
+end
 
 local function node_new(path, pos, depth)
 	return {
@@ -87,17 +158,30 @@ local function rel_dir(path)
 	return dir
 end
 
-local function icon(node)
+local function is_leaf(node)
+	return node.children ~= nil and #node.children == 0
+end
+
+-- Which indent symbol a row gets, following trouble's rules mirrored
+-- upward: a collapsed node shows the fold icon in place of its
+-- connector, the root (trouble's depth 1) shows a fold icon or nothing,
+-- and the topmost sibling is where a guide line ends.
+local function symbol_for(node, is_first)
 	if node.loading then
-		return "…", "Comment"
-	elseif node.children and #node.children == 0 then
-		return "·", "Comment"
-	elseif node.ceiling then
-		return node.expanded and "◉" or "●", "DiagnosticOk"
-	elseif node.expanded then
-		return "▴", "Special"
+		return "loading"
+	elseif node.depth == 0 then
+		if is_leaf(node) then
+			return "ws"
+		end
+		return node.expanded and "fold_open" or "fold_closed"
+	elseif not node.expanded and not is_leaf(node) then
+		return "fold_closed"
 	end
-	return "▸", "Special"
+	return is_first and "first" or "middle"
+end
+
+local function camel(s)
+	return (s:gsub("^%l", string.upper):gsub("_(%l)", string.upper))
 end
 
 --- Rebuilds the buffer from the tree, keeping the cursor on its node.
@@ -107,49 +191,84 @@ function M._render()
 		return
 	end
 	local cur = M._node_at_cursor()
+	local icons = vim.tbl_deep_extend("force", int.defaults.icons, s.opts.icons or {})
 	local lines, marks, rows = {}, {}, {}
 
-	-- Importers are emitted before (above) the file they import, in
-	-- sorted order, so reading top-down within a group still gives
-	-- pages first.
-	local function walk(node, indent)
-		if node.expanded and node.children then
-			for _, child in ipairs(node.children) do
-				walk(child, indent + 1)
+	local function glyph(symbol)
+		if symbol == "loading" then
+			return icons.loading, "ImportTreeLoading"
+		end
+		return icons.indent[symbol], "ImportTreeIndent" .. camel(symbol)
+	end
+
+	-- One row: `<pad><guides><icon> <name> <count>  <dir>  <tail>`, the
+	-- text built up segment by segment with a highlight per segment.
+	local function emit(node, indent, symbol)
+		local line, segs = "", {}
+		local function add(text, hl)
+			if text == "" then
+				return
 			end
+			if hl then
+				table.insert(segs, { #line, #line + #text, hl })
+			end
+			line = line .. text
 		end
-		local ic, ic_hl = icon(node)
-		local name = vim.fn.fnamemodify(node.path, ":t")
-		local prefix = ("%s%s "):format(("  "):rep(indent), ic)
-		local line = prefix .. name
-		local tail
+
+		add(" ")
+		for _, sym in ipairs(indent) do
+			add(glyph(sym))
+		end
+		add(glyph(symbol))
+		local icon, icon_hl = file_icon(node.path)
+		if icon then
+			add(icon .. " ", icon_hl)
+		end
+		local name_hl = node.depth == 0 and "ImportTreeRoot"
+			or node.ceiling and "ImportTreePage"
+			or "ImportTreeFilename"
+		add(vim.fn.fnamemodify(node.path, ":t"), name_hl)
+		if node.children and #node.children > 0 then
+			add(" ")
+			add((" %d "):format(#node.children), "ImportTreeCount")
+		end
+		add("  ")
+		add(rel_dir(node.path), "ImportTreeDirectory")
 		if node.failed then
-			tail = "lookup failed"
-		elseif node.children and #node.children == 0 then
-			tail = "root"
+			add("  ")
+			add("lookup failed", "ImportTreeFailed")
+		elseif is_leaf(node) then
+			add("  ")
+			add("root", "ImportTreeTail")
 		elseif node.ceiling then
-			tail = "page"
+			add("  ")
+			add("page", "ImportTreeTail")
 		end
+
 		table.insert(lines, line)
 		table.insert(rows, node)
 		local row = #lines - 1
-		table.insert(marks, { row, #prefix - #ic - 1, { end_col = #prefix - 1, hl_group = ic_hl } })
-		if indent == 0 then
-			table.insert(marks, { row, #prefix, { end_col = #line, hl_group = "Title" } })
+		for _, seg in ipairs(segs) do
+			table.insert(marks, { row, seg[1], { end_col = seg[2], hl_group = seg[3] } })
 		end
-		table.insert(marks, {
-			row,
-			0,
-			{
-				virt_text = {
-					{ rel_dir(node.path), "Comment" },
-					tail and { "  " .. tail, node.failed and "DiagnosticError" or "Comment" } or { "" },
-				},
-				virt_text_pos = "eol",
-			},
-		})
 	end
-	walk(s.root, 0)
+
+	-- Importers are emitted before (above) the file they import, in
+	-- sorted order, so reading top-down within a group still gives
+	-- pages first. `indent` holds the guide symbols inherited from the
+	-- ancestors; a node's importers get a continuing line unless the
+	-- node is the topmost of its siblings (nothing above it to reach).
+	local function walk(node, indent, is_first)
+		if node.expanded and node.children and #node.children > 0 then
+			table.insert(indent, (is_first or node.depth == 0) and "ws" or "top")
+			for i, child in ipairs(node.children) do
+				walk(child, indent, i == 1)
+			end
+			table.remove(indent)
+		end
+		emit(node, indent, symbol_for(node, is_first))
+	end
+	walk(s.root, {}, true)
 
 	vim.bo[s.buf].modifiable = true
 	vim.api.nvim_buf_set_lines(s.buf, 0, -1, false, lines)
@@ -221,18 +340,52 @@ local function expand(node, cb)
 	end)
 end
 
--- Window-local options `ensure_win` sets on the tree window.
+-- Window-local options `ensure_win` sets on the tree window, the same
+-- set trouble uses for its list window.
+-- stylua: ignore
 local TREE_WIN_OPTS = {
-	"number",
-	"relativenumber",
-	"signcolumn",
-	"foldcolumn",
-	"wrap",
-	"cursorline",
-	"winfixwidth",
-	"list",
-	"statuscolumn",
+	number         = false,
+	relativenumber = false,
+	signcolumn     = "no",
+	foldcolumn     = "0",
+	wrap           = false,
+	cursorline     = true,
+	cursorlineopt  = "both",
+	cursorcolumn   = false,
+	list           = false,
+	spell          = false,
+	statuscolumn   = "",
+	winbar         = "",
+	fillchars      = "eob: ",
+	winfixheight   = true,
+	winfixwidth    = true,
+	winhighlight   = "Normal:ImportTreeNormal,NormalNC:ImportTreeNormalNC,EndOfBuffer:ImportTreeNormal",
 }
+
+-- Split commands relative to the whole editor, as trouble uses them.
+local SPLIT = {
+	bottom = "botright",
+	top = "topleft",
+	right = "vertical botright",
+	left = "vertical topleft",
+}
+
+-- Where a new editing window goes when the tree is the only window:
+-- the side opposite the tree.
+local OPPOSITE_SPLIT = {
+	bottom = "topleft split",
+	top = "botright split",
+	right = "topleft vsplit",
+	left = "botright vsplit",
+}
+
+local function set_size(win, size, horizontal)
+	if horizontal then
+		vim.api.nvim_win_set_height(win, size)
+	else
+		vim.api.nvim_win_set_width(win, size)
+	end
+end
 
 local function in_this_tab(win)
 	return win
@@ -259,16 +412,17 @@ local function target_win()
 		end
 	end
 	-- The split copies the tree window's options, so put back the
-	-- global values, and give the tree its width back.
+	-- global values, and give the tree its size back.
+	local position, size, horizontal = win_opts()
 	local win
 	vim.api.nvim_win_call(s.win, function()
-		vim.cmd("topleft vsplit")
+		vim.cmd(OPPOSITE_SPLIT[position])
 		win = vim.api.nvim_get_current_win()
 	end)
-	for _, opt in ipairs(TREE_WIN_OPTS) do
+	for opt in pairs(TREE_WIN_OPTS) do
 		vim.wo[win][0][opt] = vim.api.nvim_get_option_value(opt, { scope = "global" })
 	end
-	vim.api.nvim_win_set_width(s.win, WIDTH)
+	set_size(s.win, size, horizontal)
 	s.prev_win = win
 	return win
 end
@@ -409,22 +563,15 @@ local function ensure_win()
 	-- Open in another tab: move it here rather than jumping there.
 	M.close()
 	s.prev_win = vim.api.nvim_get_current_win()
-	vim.cmd(("vertical botright %dsplit"):format(WIDTH))
+	local position, size = win_opts()
+	vim.cmd(("silent noswapfile %s %dsplit"):format(SPLIT[position], size))
 	s.win = vim.api.nvim_get_current_win()
 	vim.api.nvim_win_set_buf(s.win, s.buf)
 	-- `[0]` sets them like `:setlocal`; plain `vim.wo[win]` would also
 	-- overwrite the user's global values.
-	-- Keep in sync with TREE_WIN_OPTS.
-	local wo = vim.wo[s.win][0]
-	wo.number = false
-	wo.relativenumber = false
-	wo.signcolumn = "no"
-	wo.foldcolumn = "0"
-	wo.wrap = false
-	wo.cursorline = true
-	wo.winfixwidth = true
-	wo.list = false
-	wo.statuscolumn = ""
+	for opt, value in pairs(TREE_WIN_OPTS) do
+		vim.wo[s.win][0][opt] = value
+	end
 end
 
 function M.close()
